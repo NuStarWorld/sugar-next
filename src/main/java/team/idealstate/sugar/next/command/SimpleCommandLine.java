@@ -22,28 +22,18 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.Parameter;
-import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.Deque;
-import java.util.HashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.StringJoiner;
+import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
-import lombok.AccessLevel;
-import lombok.Data;
-import lombok.RequiredArgsConstructor;
+
+import lombok.*;
 import team.idealstate.sugar.logging.Log;
 import team.idealstate.sugar.next.command.annotation.CommandArgument;
 import team.idealstate.sugar.next.command.annotation.CommandHandler;
 import team.idealstate.sugar.next.command.exception.CommandArgumentConversionException;
 import team.idealstate.sugar.next.command.exception.CommandException;
 import team.idealstate.sugar.next.databind.Pair;
+import team.idealstate.sugar.next.function.Lazy;
 import team.idealstate.sugar.validate.Validation;
 import team.idealstate.sugar.validate.annotation.NotNull;
 
@@ -58,6 +48,10 @@ final class SimpleCommandLine implements CommandLine {
 
     @NotNull
     private final String name;
+
+    private final boolean isArgument;
+
+    private SimpleCommandHelpTree helpTree;
 
     @NotNull
     private final List<String> permission;
@@ -77,7 +71,9 @@ final class SimpleCommandLine implements CommandLine {
     public static SimpleCommandLine of(@NotNull String name, @NotNull Object command) {
         CommandLine.validateName(name);
         Validation.notNull(command, "command must not be null.");
+        // lazyRoot 让根节点能被下面的不全闭包引用（闭包先定义，root 后创建）
         final AtomicReference<SimpleCommandLine> lazyRoot = new AtomicReference<>();
+        // 根级补全器：把所有可见子节点的补全结果拼起来
         CommandArgument.Completer completer = (context, argument) -> {
             SimpleCommandLine commandLine = lazyRoot.get();
             Deque<SimpleCommandLine> children = new ArrayDeque<>(commandLine.children);
@@ -97,18 +93,21 @@ final class SimpleCommandLine implements CommandLine {
             }
             return ret;
         };
+        // 构造根节点：深度 -1，权限=根名，开放命令，参数类型占位为 String
         SimpleCommandLine root = new SimpleCommandLine(
-                ROOT_DEPTH, name, Collections.singletonList(name), true, String.class, null, completer);
+                ROOT_DEPTH, name, false, Collections.singletonList(name), true, String.class, null, completer);
         lazyRoot.set(root);
         Class<?> commandType = command.getClass();
         Method[] methods = commandType.getMethods();
         if (methods.length == 0) {
             return root;
         }
+        // 先按参数个数升序排序，减少歧义时的差异
         methods = Arrays.stream(methods)
                 .sorted(Comparator.comparingInt(Method::getParameterCount))
                 .toArray(Method[]::new);
         for (Method method : methods) {
+            // 只接受实例方法且返回值必须是 CommandResult
             if (Modifier.isStatic(method.getModifiers()) || !CommandResult.class.equals(method.getReturnType())) {
                 continue;
             }
@@ -121,6 +120,7 @@ final class SimpleCommandLine implements CommandLine {
             if (value.isEmpty()) {
                 value = methodName;
             }
+            // 拆分路径，变量用 {var} 表示，变量必须出现在字面量之后
             String[] arguments = value.split(ARGUMENTS_DELIMITER);
             int variableCount = 0;
             for (int i = 0; i < arguments.length; i++) {
@@ -139,12 +139,14 @@ final class SimpleCommandLine implements CommandLine {
             }
             String[] permission = commandHandler.permission();
             if (permission.length == 0) {
+                // 权限默认：根名 + 路径各段
                 String[] temp = new String[arguments.length + 1];
                 temp[0] = name;
                 System.arraycopy(arguments, 0, temp, 1, arguments.length);
                 permission = temp;
             }
             Parameter[] parameters = method.getParameters();
+            // 收集所有变量参数的元数据；CommandContext 不算变量
             Map<String, Pair<Parameter, CommandArgument>> commandArguments = new HashMap<>(parameters.length);
             for (Parameter parameter : parameters) {
                 CommandArgument commandArgument = parameter.getDeclaredAnnotation(CommandArgument.class);
@@ -163,10 +165,12 @@ final class SimpleCommandLine implements CommandLine {
                 commandArguments.put(value, Pair.of(parameter, commandArgument));
             }
             if (commandArguments.size() != variableCount) {
+                // 变量段数量必须等于带 @CommandArgument 的参数数量
                 throw new IllegalArgumentException("parameter size must be same as variable size.");
             }
             SimpleCommandLine parent = root;
             int variableStart = arguments.length - variableCount;
+            // 逐段下钻构建节点链（parent 始终指向当前层）
             for (int i = 0; i < arguments.length; i++) {
                 String childName = arguments[i];
                 CommandArgument.Converter<?> converter = null;
@@ -174,6 +178,7 @@ final class SimpleCommandLine implements CommandLine {
                 boolean isVariable = i >= variableStart;
                 Class<?> parameterType = null;
                 if (isVariable) {
+                    // 变量段：绑定对应参数并准备转换器/补全器
                     Pair<Parameter, CommandArgument> pair = commandArguments.get(childName);
                     Parameter parameter;
                     if (pair == null || (parameter = pair.getFirst()) == null) {
@@ -194,6 +199,7 @@ final class SimpleCommandLine implements CommandLine {
                                     converterClass.getConstructor();
                             converter = constructor.newInstance();
                         } else {
+                            // 方法名转换器：不可 static，返回类型必须是 ConverterResult
                             String converterMethodName = commandArgument.converter();
                             if (!converterMethodName.isEmpty()) {
                                 Method converterMethod = commandType.getMethod(
@@ -213,6 +219,7 @@ final class SimpleCommandLine implements CommandLine {
                                 converterMethod.setAccessible(true);
                                 converter = new SimpleCommandArgumentConverter(parameterType, command, converterMethod);
                             }
+                            // 默认转换器：接受任意字符串直接原样返回
                             if (converter == null) {
                                 converter = new CommandArgument.AbstractConverter<String>(String.class) {
                                     @NotNull
@@ -237,6 +244,7 @@ final class SimpleCommandLine implements CommandLine {
                                     completerClass.getConstructor();
                             completer = constructor.newInstance();
                         } else {
+                            // 方法名补全器：不可 static，返回类型必须是 List
                             String completerMethodName = commandArgument.completer();
                             if (!completerMethodName.isEmpty()) {
                                 Method completerMethod =
@@ -266,6 +274,7 @@ final class SimpleCommandLine implements CommandLine {
                                 "%s(...): variable parameter '%s' must have a type.", methodName, childName));
                     }
                 } else {
+                    // 字面量段：不全用前缀匹配
                     List<String> list = Collections.singletonList(childName);
                     completer = (context, argument) -> {
                         if (argument.isEmpty() || childName.toLowerCase().startsWith(argument.toLowerCase())) {
@@ -274,14 +283,17 @@ final class SimpleCommandLine implements CommandLine {
                         return Collections.emptyList();
                     };
                 }
+                // 将子节点追加到当前父节点并推进 parent
                 parent = parent.addChild(
                         childName,
+                        isVariable,
                         Arrays.asList(permission),
                         commandHandler.open(),
                         parameterType == null ? String.class : parameterType,
                         converter,
                         completer);
             }
+            // 末节点绑定执行器（直接反射调用目标方法）
             method.setAccessible(true);
             parent.executor = new SimpleCommandExecutor(command, method);
         }
@@ -314,44 +326,55 @@ final class SimpleCommandLine implements CommandLine {
     }
 
     @NotNull
+    // 从当前节点出发匹配后续参数，返回“最高分”的命中路径
     private static Pair<Double, List<SimpleCommandLine>> accept(
             @NotNull SimpleCommandLine parent,
             @NotNull CommandContext context,
             int current,
             @NotNull String... arguments) {
+        // next：即将匹配的参数下标
         int next = current + 1;
         if (next >= arguments.length) {
             return pair(0.D, Collections.emptyList());
         }
+        // 遍历当前节点的子节点（拷贝一份，避免迭代时修改）
         Deque<SimpleCommandLine> children = new ArrayDeque<>(parent.children);
         if (children.isEmpty()) {
             return pair(0.D, Collections.emptyList());
         }
         String argument = arguments[next];
+        // key: score，value: 命中的节点链
         Map<Double, List<SimpleCommandLine>> accepted = new HashMap<>(children.size());
         for (SimpleCommandLine child : children) {
+            // 必须 depth 精确命中，且 child.accept 通过才继续
             if (child.depth != next || !child.accept(context, argument)) {
                 continue;
             }
             List<SimpleCommandLine> acceptedChildren = new ArrayList<>();
             List<SimpleCommandLine> nextAcceptedChildren = Collections.singletonList(child);
             do {
+                // 将当前这一层命中的节点追加到链尾
                 acceptedChildren.addAll(nextAcceptedChildren);
+                // 递归尝试更深层的命中
                 nextAcceptedChildren = accept(
                                 acceptedChildren.get(acceptedChildren.size() - 1), context, next, arguments)
                         .getSecond();
             } while (!nextAcceptedChildren.isEmpty());
             int hit = acceptedChildren.size();
+            // 未命中深度：末尾节点到底的距离（惩罚项）
             int unhit = getLastChildDepth(acceptedChildren.get(hit - 1)) - hit + 1;
+            // 评分 = 命中率 - 未命中深度
             double score = hit * 1.0D / arguments.length - unhit;
             Log.debug(() -> String.format("score: %s / %s - %s = %s", hit, arguments.length, unhit, score));
             if (!accepted.containsKey(score)) {
+                // 同分时保留先出现的（后面的直接丢弃）
                 accepted.put(score, acceptedChildren);
             }
         }
         if (accepted.isEmpty()) {
             return pair(0.D, Collections.emptyList());
         }
+        // 取最高分的命中链
         Double key = accepted.keySet().stream().max(Double::compare).get();
         return pair(key, accepted.get(key));
     }
@@ -360,9 +383,6 @@ final class SimpleCommandLine implements CommandLine {
     private static boolean validate(@NotNull CommandContext context, @NotNull String... arguments) {
         Validation.notNull(context, "context must not be null.");
         Validation.notNull(arguments, "arguments must not be null.");
-        if (arguments.length == 0) {
-            return false;
-        }
         for (String argument : arguments) {
             Validation.notNull(argument, "argument must not be null.");
         }
@@ -387,6 +407,7 @@ final class SimpleCommandLine implements CommandLine {
     @NotNull
     private SimpleCommandLine addChild(
             @NotNull String name,
+            boolean isArgument,
             @NotNull List<String> permission,
             boolean open,
             @NotNull Class<?> argumentType,
@@ -396,7 +417,7 @@ final class SimpleCommandLine implements CommandLine {
         Validation.notNull(permission, "permission must not be null.");
         Validation.notNull(argumentType, "argumentType must not be null.");
         SimpleCommandLine child =
-                new SimpleCommandLine(depth + 1, name, permission, open, argumentType, converter, completer);
+                new SimpleCommandLine(depth + 1, name, isArgument, permission, open, argumentType, converter, completer);
         children.add(child);
         return child;
     }
@@ -439,6 +460,13 @@ final class SimpleCommandLine implements CommandLine {
     public @NotNull CommandResult execute(@NotNull CommandContext context, @NotNull String... arguments)
             throws CommandException {
         if (!validate(context, arguments)) {
+            return CommandResult.failure();
+        }
+        if (arguments.length == 0) {
+            if (helpTree == null) {
+                helpTree = new SimpleCommandHelpTree();
+            }
+            context.getSender().sendMessage(helpTree.lazyHelpMessage.get());
             return CommandResult.failure();
         }
         Pair<Double, List<SimpleCommandLine>> accept = accept(this, context, depth, arguments);
@@ -551,5 +579,142 @@ final class SimpleCommandLine implements CommandLine {
         }
         Set<String> set = new LinkedHashSet<>(completed);
         return new ArrayList<>(set);
+    }
+
+    class SimpleCommandHelpTree {
+
+        private final String rootName = SimpleCommandLine.this.getName();
+
+        private final Map<String, ArgumentPoint> argumentMap = new LinkedHashMap<>();
+
+        private final Lazy<String> lazyHelpMessage = Lazy.of(this::buildMessageTree);
+
+        SimpleCommandHelpTree() {
+            // 递归构建参数节点树
+            for (SimpleCommandLine parentChild : SimpleCommandLine.this.children) {
+                ArgumentPoint argumentPoint = argumentMap.computeIfAbsent(parentChild.getName(), s -> new ArgumentPoint(null, s, parentChild.isArgument(), 0));
+                for (SimpleCommandLine child : parentChild.children) {
+                    buildTreeArgumentPoint(argumentPoint, child, 1);
+                }
+            }
+        }
+
+        private void buildTreeArgumentPoint(ArgumentPoint parent, SimpleCommandLine childCommandLine, int depth) {
+            ArgumentPoint argumentPoint = new ArgumentPoint(parent, childCommandLine.getName(), childCommandLine.isArgument(), depth);
+            parent.addChild(argumentPoint);
+            for (SimpleCommandLine child : childCommandLine.children) {
+                buildTreeArgumentPoint(argumentPoint, child, depth + 1);
+            }
+        }
+
+        private String buildMessageTree() {
+            StringBuilder helpBuilder = new StringBuilder("Usage: /").append(rootName).append("\n");
+            AtomicInteger index = new AtomicInteger(0);
+            for (Map.Entry<String, ArgumentPoint> entry : argumentMap.entrySet()) {
+               buildTreeRecursively(entry.getValue(), helpBuilder, 0, index, true);
+            }
+
+            return helpBuilder.toString();
+        }
+
+        private void buildTreeRecursively(ArgumentPoint node, StringBuilder helpBuilder, int depth, AtomicInteger index, boolean isUsingBreakLine) {
+            if (node.isRootArgumentPoint() && node.isArgument()) {
+                throw new CommandException(String.format("root node %s can not is argument", node.getName()));
+            }
+
+            // 判断是否是最后一个子节点 是的话用不同的符号
+            int andAdd = index.incrementAndGet();
+            int parentSize;
+            if (node.isRootArgumentPoint()) {
+                parentSize = argumentMap.size();
+            } else {
+                parentSize = node.getParent().getChildCount();
+            }
+
+            // 上一个节点使用了换行符才添加符号
+            if (isUsingBreakLine) {
+                // 根据深度添加缩进
+                for (int i = 0; i < depth; i++) {
+                    helpBuilder.append("  ");  // 两个空格缩进
+                }
+                if (andAdd == parentSize) {
+                    helpBuilder.append(node.getPrefix("└── "));
+                    index.set(0);
+                } else {
+                    helpBuilder.append(node.getPrefix("├── "));
+                }
+            } else {
+                helpBuilder.append(" ");
+            }
+
+            if (node.isArgument()) {
+                helpBuilder.append(String.format("<%s>", node.name));
+            } else {
+                helpBuilder.append(node.name);
+            }
+
+            // 没有子节点时换行
+            boolean useBreakLine = false;
+            if (node.isEmpty()) {
+                helpBuilder.append("\n");
+                useBreakLine = true;
+            } else if (node.getChildCount() > 1) {
+                helpBuilder.append("\n");
+                useBreakLine = true;
+            }
+
+            AtomicInteger newIndex = new AtomicInteger(0);
+            // 开始遍历子节点
+            for (Map.Entry<String, List<ArgumentPoint>> argmentPointEntry : node.entrySet()) {
+                List<ArgumentPoint> sameArgumentPointNameList = argmentPointEntry.getValue();
+                for (ArgumentPoint child : sameArgumentPointNameList) {
+                    buildTreeRecursively(child, helpBuilder, depth + 1, newIndex, useBreakLine);
+                }
+            }
+        }
+
+        @AllArgsConstructor
+        @Getter
+        @ToString
+        class ArgumentPoint extends LinkedHashMap<String, List<ArgumentPoint>> {
+
+            private final ArgumentPoint parent;
+
+            private final String name;
+
+            private final boolean isArgument;
+
+            private final int depth;
+
+            public void addChild(ArgumentPoint child) {
+                if (child.getParentName() == null || child.getParentName().isEmpty()) {
+                    throw new NullPointerException("You adding the Root ArgumentPoint to the childArgumentPoint!");
+                }
+                List<ArgumentPoint> argumentPoints = computeIfAbsent(child.getName(), s -> new ArrayList<>());
+                argumentPoints.add(child);
+            }
+
+            public boolean isRootArgumentPoint() {
+                return parent == null;
+            }
+
+            public String getParentName() {
+                return parent == null ? "" : parent.getName();
+            }
+
+            public int getChildCount() {
+                return values().stream().mapToInt(List::size).sum();
+            }
+
+            public String getPrefix(String symbol) {
+                StringBuilder prefixBuilder = new StringBuilder("        ");
+                for (int i = 0; i < depth + (getParentName().length() / 2); i++) {
+                    prefixBuilder.append(" ");
+                }
+                prefixBuilder.append(symbol);
+                return prefixBuilder.toString();
+            }
+
+        }
     }
 }

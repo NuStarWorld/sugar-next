@@ -27,6 +27,8 @@ public interface CommandSender {
     @NotNull
     UUID getUniqueId();
 
+    void sendMessage(@NotNull String message);
+
     default boolean isConsole() {
         return CONSOLE_UUID.equals(getUniqueId());
     }
