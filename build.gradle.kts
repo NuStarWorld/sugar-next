@@ -1,5 +1,3 @@
-import com.diffplug.spotless.LineEnding
-import org.jreleaser.model.Active
 
 plugins {
     glass(JAVA)
@@ -40,6 +38,9 @@ repositories {
     aliyun()
     sonatype()
     sonatype(SNAPSHOT)
+    maven {
+        url = uri("https://maven.nustar.top/repository/nustar-public/")
+    }
     mavenCentral()
 }
 
@@ -58,77 +59,10 @@ dependencies {
 publishing {
     repositories {
         project(project)
-    }
-    publications {
-        main {
-            pom {
-                description.set("Coffee(Java) with sugar is sweeter.")
-                url.set("https://github.com/ideal-state/sugar-next")
-                licenses {
-                    license {
-                        name.set("Apache License 2.0")
-                        url.set("https://www.apache.org/licenses/LICENSE-2.0.txt")
-                    }
-                }
-                scm {
-                    url.set("https://github.com/ideal-state/sugar-next")
-                    connection.set("scm:git:https://github.com/ideal-state/sugar-next.git")
-                    developerConnection.set("scm:git:https://github.com/ideal-state/sugar-next.git")
-                }
-                developers {
-                    developer {
-                        id.set("ideal-state")
-                        name.set("ideal-state")
-                        email.set("support@idealstate.team")
-                    }
-                }
-            }
-        }
-    }
-}
-
-jreleaser {
-    deploy {
         maven {
-            mavenCentral {
-                create("release") {
-                    active.set(Active.RELEASE)
-                    url.set("https://central.sonatype.com/api/v1/publisher")
-                    sign.set(false)
-                    stagingRepository("build/repository")
-                }
-            }
-            nexus2 {
-                create("snapshot") {
-                    active.set(Active.SNAPSHOT)
-                    url.set("https://central.sonatype.com/repository/maven-snapshots")
-                    snapshotUrl.set("https://central.sonatype.com/repository/maven-snapshots")
-                    sign.set(false)
-                    applyMavenCentralRules.set(true)
-                    snapshotSupported.set(true)
-                    closeRepository.set(true)
-                    releaseRepository.set(true)
-                    verifyPom.set(false)
-                    stagingRepository("build/repository")
-                }
-            }
+            name = "nustar-snapshots"
+            url = uri("https://maven.nustar.top/repository/nustar-snapshots/")
+            properties(project).login()
         }
     }
-}
-
-spotless {
-    lineEndings = LineEnding.GIT_ATTRIBUTES_FAST_ALLSAME
-}
-
-tasks.register("doDeploy") {
-    dependsOn(tasks.named("test"))
-    dependsOn(tasks.named("publishAllPublicationsToProjectRepository"))
-    finalizedBy(tasks.named("jreleaserDeploy"))
-}
-
-tasks.register("deploy") {
-    group = "glass"
-    dependsOn(tasks.named("clean"))
-    dependsOn(tasks.named("spotlessApply"))
-    finalizedBy(tasks.named("doDeploy"))
 }
