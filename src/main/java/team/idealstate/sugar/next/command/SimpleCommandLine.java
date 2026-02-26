@@ -23,7 +23,6 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.Parameter;
 import java.util.*;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import lombok.*;
@@ -585,136 +584,72 @@ final class SimpleCommandLine implements CommandLine {
 
         private final String rootName = SimpleCommandLine.this.getName();
 
-        private final Map<String, ArgumentPoint> argumentMap = new LinkedHashMap<>();
+        private final Map<String, ArgumentPoint> rootArgumentMap = new LinkedHashMap<>();
 
         private final Lazy<String> lazyHelpMessage = Lazy.of(this::buildMessageTree);
 
         SimpleCommandHelpTree() {
-            // 递归构建参数节点树
-            for (SimpleCommandLine parentChild : SimpleCommandLine.this.children) {
-                ArgumentPoint argumentPoint = argumentMap.computeIfAbsent(parentChild.getName(), s -> new ArgumentPoint(null, s, parentChild.isArgument(), 0));
-                for (SimpleCommandLine child : parentChild.children) {
-                    buildTreeArgumentPoint(argumentPoint, child, 1);
-                }
+            for (SimpleCommandLine child : SimpleCommandLine.this.children) {
+                mergeNode(rootArgumentMap, child);
             }
         }
 
-        private void buildTreeArgumentPoint(ArgumentPoint parent, SimpleCommandLine childCommandLine, int depth) {
-            ArgumentPoint argumentPoint = new ArgumentPoint(parent, childCommandLine.getName(), childCommandLine.isArgument(), depth);
-            parent.addChild(argumentPoint);
-            for (SimpleCommandLine child : childCommandLine.children) {
-                buildTreeArgumentPoint(argumentPoint, child, depth + 1);
+        private void mergeNode(@NotNull Map<String, ArgumentPoint> nodeMap, @NotNull SimpleCommandLine commandLine) {
+            String key = keyOf(commandLine.getName(), commandLine.isArgument());
+            ArgumentPoint point =
+                    nodeMap.computeIfAbsent(key, s -> new ArgumentPoint(commandLine.getName(), commandLine.isArgument()));
+            for (SimpleCommandLine child : commandLine.children) {
+                mergeNode(point.getChildren(), child);
             }
         }
 
         private String buildMessageTree() {
             StringBuilder helpBuilder = new StringBuilder("Usage: /").append(rootName).append("\n");
-            AtomicInteger index = new AtomicInteger(0);
-            for (Map.Entry<String, ArgumentPoint> entry : argumentMap.entrySet()) {
-               buildTreeRecursively(entry.getValue(), helpBuilder, 0, index, true);
+            List<ArgumentPoint> rootNodes = new ArrayList<>(rootArgumentMap.values());
+            for (int i = 0; i < rootNodes.size(); i++) {
+                buildTreeRecursively(rootNodes.get(i), helpBuilder, "", i == rootNodes.size() - 1);
             }
-
             return helpBuilder.toString();
         }
 
-        private void buildTreeRecursively(ArgumentPoint node, StringBuilder helpBuilder, int depth, AtomicInteger index, boolean isUsingBreakLine) {
-            if (node.isRootArgumentPoint() && node.isArgument()) {
-                throw new CommandException(String.format("root node %s can not is argument", node.getName()));
+        private void buildTreeRecursively(
+                @NotNull ArgumentPoint node,
+                @NotNull StringBuilder helpBuilder,
+                @NotNull String prefix,
+                boolean isLast) {
+            helpBuilder.append(prefix).append(isLast ? "└── " : "├── ");
+            ArgumentPoint current = node;
+            helpBuilder.append(current.getDisplayName());
+            while (current.getChildren().size() == 1) {
+                current = current.getChildren().values().iterator().next();
+                helpBuilder.append(" ").append(current.getDisplayName());
             }
-
-            // 判断是否是最后一个子节点 是的话用不同的符号
-            int andAdd = index.incrementAndGet();
-            int parentSize;
-            if (node.isRootArgumentPoint()) {
-                parentSize = argumentMap.size();
-            } else {
-                parentSize = node.getParent().getChildCount();
-            }
-
-            // 上一个节点使用了换行符才添加符号
-            if (isUsingBreakLine) {
-                // 根据深度添加缩进
-                for (int i = 0; i < depth; i++) {
-                    helpBuilder.append("  ");  // 两个空格缩进
-                }
-                if (andAdd == parentSize) {
-                    helpBuilder.append(node.getPrefix("└── "));
-                    index.set(0);
-                } else {
-                    helpBuilder.append(node.getPrefix("├── "));
-                }
-            } else {
-                helpBuilder.append(" ");
-            }
-
-            if (node.isArgument()) {
-                helpBuilder.append(String.format("<%s>", node.name));
-            } else {
-                helpBuilder.append(node.name);
-            }
-
-            // 没有子节点时换行
-            boolean useBreakLine = false;
-            if (node.isEmpty()) {
-                helpBuilder.append("\n");
-                useBreakLine = true;
-            } else if (node.getChildCount() > 1) {
-                helpBuilder.append("\n");
-                useBreakLine = true;
-            }
-
-            AtomicInteger newIndex = new AtomicInteger(0);
-            // 开始遍历子节点
-            for (Map.Entry<String, List<ArgumentPoint>> argmentPointEntry : node.entrySet()) {
-                List<ArgumentPoint> sameArgumentPointNameList = argmentPointEntry.getValue();
-                for (ArgumentPoint child : sameArgumentPointNameList) {
-                    buildTreeRecursively(child, helpBuilder, depth + 1, newIndex, useBreakLine);
-                }
+            helpBuilder.append("\n");
+            List<ArgumentPoint> children = new ArrayList<>(current.getChildren().values());
+            String childPrefix = prefix + (isLast ? "    " : "│   ");
+            for (int i = 0; i < children.size(); i++) {
+                buildTreeRecursively(children.get(i), helpBuilder, childPrefix, i == children.size() - 1);
             }
         }
 
-        @AllArgsConstructor
-        @Getter
-        @ToString
-        class ArgumentPoint extends LinkedHashMap<String, List<ArgumentPoint>> {
+        private String keyOf(@NotNull String name, boolean argument) {
+            return argument ? "ARG:" + name : "LIT:" + name;
+        }
 
-            private final ArgumentPoint parent;
+        @Getter
+        @RequiredArgsConstructor
+        @ToString
+        class ArgumentPoint {
 
             private final String name;
 
-            private final boolean isArgument;
+            private final boolean argument;
 
-            private final int depth;
+            private final Map<String, ArgumentPoint> children = new LinkedHashMap<>();
 
-            public void addChild(ArgumentPoint child) {
-                if (child.getParentName() == null || child.getParentName().isEmpty()) {
-                    throw new NullPointerException("You adding the Root ArgumentPoint to the childArgumentPoint!");
-                }
-                List<ArgumentPoint> argumentPoints = computeIfAbsent(child.getName(), s -> new ArrayList<>());
-                argumentPoints.add(child);
+            public String getDisplayName() {
+                return argument ? String.format("<%s>", name) : name;
             }
-
-            public boolean isRootArgumentPoint() {
-                return parent == null;
-            }
-
-            public String getParentName() {
-                return parent == null ? "" : parent.getName();
-            }
-
-            public int getChildCount() {
-                return values().stream().mapToInt(List::size).sum();
-            }
-
-            public String getPrefix(String symbol) {
-                StringBuilder prefixBuilder = new StringBuilder("        ");
-                for (int i = 0; i < depth + (getParentName().length() / 2); i++) {
-                    prefixBuilder.append(" ");
-                }
-                prefixBuilder.append(symbol);
-                return prefixBuilder.toString();
-            }
-
         }
     }
 }
