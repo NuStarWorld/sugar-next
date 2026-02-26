@@ -56,6 +56,8 @@ public @interface CommandHandler {
      */
     String[] permission() default {};
 
+    String description() default "";
+
     /** @return 命令行是否为开放的，为 false 时将在命令行执行前进行权限节点的检查 */
     boolean open() default false;
 }

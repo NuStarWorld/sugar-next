@@ -48,6 +48,8 @@ final class SimpleCommandLine implements CommandLine {
     @NotNull
     private final String name;
 
+    private String description = "";
+
     private final boolean isArgument;
 
     private SimpleCommandHelpTree helpTree;
@@ -94,7 +96,7 @@ final class SimpleCommandLine implements CommandLine {
         };
         // 构造根节点：深度 -1，权限=根名，开放命令，参数类型占位为 String
         SimpleCommandLine root = new SimpleCommandLine(
-                ROOT_DEPTH, name, false, Collections.singletonList(name), true, String.class, null, completer);
+                ROOT_DEPTH, name,false, Collections.singletonList(name), true, String.class, null, completer);
         lazyRoot.set(root);
         Class<?> commandType = command.getClass();
         Method[] methods = commandType.getMethods();
@@ -115,6 +117,7 @@ final class SimpleCommandLine implements CommandLine {
                 continue;
             }
             String value = commandHandler.value();
+            String description = commandHandler.description();
             String methodName = method.getName();
             if (value.isEmpty()) {
                 value = methodName;
@@ -294,6 +297,7 @@ final class SimpleCommandLine implements CommandLine {
             }
             // 末节点绑定执行器（直接反射调用目标方法）
             method.setAccessible(true);
+            parent.setDescription(description);
             parent.executor = new SimpleCommandExecutor(command, method);
         }
         return root;
@@ -596,8 +600,8 @@ final class SimpleCommandLine implements CommandLine {
 
         private void mergeNode(@NotNull Map<String, ArgumentPoint> nodeMap, @NotNull SimpleCommandLine commandLine) {
             String key = keyOf(commandLine.getName(), commandLine.isArgument());
-            ArgumentPoint point =
-                    nodeMap.computeIfAbsent(key, s -> new ArgumentPoint(commandLine.getName(), commandLine.isArgument()));
+            ArgumentPoint point = nodeMap.computeIfAbsent(
+                    key, s -> new ArgumentPoint(commandLine.getName(), commandLine.isArgument(), commandLine.getDescription(), commandLine.getExecutor() != null));
             for (SimpleCommandLine child : commandLine.children) {
                 mergeNode(point.getChildren(), child);
             }
@@ -620,9 +624,12 @@ final class SimpleCommandLine implements CommandLine {
             helpBuilder.append(prefix).append(isLast ? "└── " : "├── ");
             ArgumentPoint current = node;
             helpBuilder.append(current.getDisplayName());
-            while (current.getChildren().size() == 1) {
+            while (current.getChildren().size() == 1 && !current.isTerminal()) {
                 current = current.getChildren().values().iterator().next();
                 helpBuilder.append(" ").append(current.getDisplayName());
+            }
+            if (!current.getDescription().isEmpty()) {
+                helpBuilder.append(" - ").append(current.getDescription());
             }
             helpBuilder.append("\n");
             List<ArgumentPoint> children = new ArrayList<>(current.getChildren().values());
@@ -644,6 +651,10 @@ final class SimpleCommandLine implements CommandLine {
             private final String name;
 
             private final boolean argument;
+
+            private final String description;
+
+            private final boolean terminal;
 
             private final Map<String, ArgumentPoint> children = new LinkedHashMap<>();
 
