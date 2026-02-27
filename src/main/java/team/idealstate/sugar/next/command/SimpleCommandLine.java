@@ -589,10 +589,11 @@ final class SimpleCommandLine implements CommandLine {
         private final String rootName = SimpleCommandLine.this.getName();
 
         private static final String TREE_ROOT_INDENT = "        ";
-        private static final String TREE_BRANCH_LAST = "└── ";
-        private static final String TREE_BRANCH_MIDDLE = "├── ";
+        private static final String TREE_BRANCH_LAST = "§7└── ";
+        private static final String TREE_BRANCH_MIDDLE = "§7├── ";
         private static final String TREE_CHILD_INDENT_LAST = "    ";
-        private static final String TREE_CHILD_INDENT_MIDDLE = "│   ";
+        private static final String TREE_CHILD_INDENT_MIDDLE = "§7│   ";
+        private final Comparator<ArgumentPoint> treeAsciiComparator = Comparator.comparing(ArgumentPoint::getDisplayName);
 
         private final Map<String, ArgumentPoint> rootArgumentMap = new LinkedHashMap<>();
 
@@ -614,8 +615,9 @@ final class SimpleCommandLine implements CommandLine {
         }
 
         private String buildMessageTree() {
-            StringBuilder helpBuilder = new StringBuilder("Usage: /").append(rootName).append("\n");
+            StringBuilder helpBuilder = new StringBuilder("§cUsage: /").append(rootName).append("\n");
             List<ArgumentPoint> rootNodes = new ArrayList<>(rootArgumentMap.values());
+            rootNodes.sort(treeAsciiComparator);
             for (int i = 0; i < rootNodes.size(); i++) {
                 buildTreeRecursively(rootNodes.get(i), helpBuilder, TREE_ROOT_INDENT, i == rootNodes.size() - 1);
             }
@@ -639,6 +641,7 @@ final class SimpleCommandLine implements CommandLine {
             }
             helpBuilder.append("\n");
             List<ArgumentPoint> children = new ArrayList<>(current.getChildren().values());
+            children.sort(treeAsciiComparator);
             String childPrefix = prefix + (isLast ? TREE_CHILD_INDENT_LAST : TREE_CHILD_INDENT_MIDDLE);
             for (int i = 0; i < children.size(); i++) {
                 buildTreeRecursively(children.get(i), helpBuilder, childPrefix, i == children.size() - 1);
@@ -665,7 +668,7 @@ final class SimpleCommandLine implements CommandLine {
             private final Map<String, ArgumentPoint> children = new LinkedHashMap<>();
 
             public String getDisplayName() {
-                return argument ? String.format("<%s>", name) : name;
+                return argument ? String.format("§7<%s>", name) : "§c" + name;
             }
         }
     }
