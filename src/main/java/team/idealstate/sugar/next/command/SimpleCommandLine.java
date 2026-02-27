@@ -32,7 +32,6 @@ import team.idealstate.sugar.next.command.annotation.CommandHandler;
 import team.idealstate.sugar.next.command.exception.CommandArgumentConversionException;
 import team.idealstate.sugar.next.command.exception.CommandException;
 import team.idealstate.sugar.next.databind.Pair;
-import team.idealstate.sugar.next.function.Lazy;
 import team.idealstate.sugar.validate.Validation;
 import team.idealstate.sugar.validate.annotation.NotNull;
 
@@ -469,7 +468,7 @@ final class SimpleCommandLine implements CommandLine {
             if (helpTree == null) {
                 helpTree = new SimpleCommandHelpTree();
             }
-            String message = helpTree.lazyHelpMessage.get();
+            String message = helpTree.buildMessageTree(context.getSender());
             for (String line : message.split("\n")) {
                 context.getSender().sendMessage(line);
             }
@@ -600,8 +599,6 @@ final class SimpleCommandLine implements CommandLine {
 
         private final Map<String, ArgumentPoint> rootArgumentMap = new LinkedHashMap<>();
 
-        private final Lazy<String> lazyHelpMessage = Lazy.of(this::buildMessageTree);
-
         SimpleCommandHelpTree() {
             for (SimpleCommandLine child : SimpleCommandLine.this.children) {
                 mergeNode(rootArgumentMap, child);
@@ -611,43 +608,90 @@ final class SimpleCommandLine implements CommandLine {
         private void mergeNode(@NotNull Map<String, ArgumentPoint> nodeMap, @NotNull SimpleCommandLine commandLine) {
             String key = keyOf(commandLine.getName(), commandLine.isArgument());
             ArgumentPoint point = nodeMap.computeIfAbsent(
-                    key, s -> new ArgumentPoint(commandLine.getName(), commandLine.isArgument(), commandLine.getDescription(), commandLine.getExecutor() != null));
+                    key, s -> new ArgumentPoint(commandLine.getName(), commandLine.isArgument()));
+            point.addSource(commandLine);
             for (SimpleCommandLine child : commandLine.children) {
                 mergeNode(point.getChildren(), child);
             }
         }
 
-        private String buildMessageTree() {
+        private String buildMessageTree(@NotNull CommandSender sender) {
             StringBuilder helpBuilder = new StringBuilder("§6Usage: /").append(rootName).append("\n");
-            List<ArgumentPoint> rootNodes = new ArrayList<>(rootArgumentMap.values());
-            rootNodes.sort(treeAsciiComparator);
+            Map<ArgumentPoint, Boolean> visibilityCache = new IdentityHashMap<>();
+            List<ArgumentPoint> rootNodes = getVisibleSortedNodes(rootArgumentMap.values(), sender, visibilityCache);
             for (int i = 0; i < rootNodes.size(); i++) {
-                buildTreeRecursively(rootNodes.get(i), helpBuilder, TREE_ROOT_INDENT, i == rootNodes.size() - 1);
+                buildTreeRecursively(
+                        rootNodes.get(i), helpBuilder, TREE_ROOT_INDENT, i == rootNodes.size() - 1, sender, visibilityCache);
             }
             return helpBuilder.toString();
+        }
+
+        private List<ArgumentPoint> getVisibleSortedNodes(
+                @NotNull Collection<ArgumentPoint> nodes,
+                @NotNull CommandSender sender,
+                @NotNull Map<ArgumentPoint, Boolean> visibilityCache) {
+            List<ArgumentPoint> visible = new ArrayList<>(nodes.size());
+            for (ArgumentPoint node : nodes) {
+                if (isVisible(node, sender, visibilityCache)) {
+                    visible.add(node);
+                }
+            }
+            visible.sort(treeAsciiComparator);
+            return visible;
+        }
+
+        private boolean isVisible(
+                @NotNull ArgumentPoint node,
+                @NotNull CommandSender sender,
+                @NotNull Map<ArgumentPoint, Boolean> visibilityCache) {
+            Boolean cached = visibilityCache.get(node);
+            if (cached != null) {
+                return cached;
+            }
+            boolean visible = node.isVisibleTerminal(sender);
+            if (!visible) {
+                for (ArgumentPoint child : node.getChildren().values()) {
+                    if (isVisible(child, sender, visibilityCache)) {
+                        visible = true;
+                        break;
+                    }
+                }
+            }
+            visibilityCache.put(node, visible);
+            return visible;
         }
 
         private void buildTreeRecursively(
                 @NotNull ArgumentPoint node,
                 @NotNull StringBuilder helpBuilder,
                 @NotNull String prefix,
-                boolean isLast) {
+                boolean isLast,
+                @NotNull CommandSender sender,
+                @NotNull Map<ArgumentPoint, Boolean> visibilityCache) {
             helpBuilder.append(prefix).append(isLast ? TREE_BRANCH_LAST : TREE_BRANCH_MIDDLE);
             ArgumentPoint current = node;
             helpBuilder.append(current.getDisplayName());
-            while (current.getChildren().size() == 1 && !current.isTerminal()) {
-                current = current.getChildren().values().iterator().next();
+            List<ArgumentPoint> visibleChildren =
+                    getVisibleSortedNodes(current.getChildren().values(), sender, visibilityCache);
+            while (visibleChildren.size() == 1 && !current.isVisibleTerminal(sender)) {
+                current = visibleChildren.get(0);
                 helpBuilder.append(" ").append(current.getDisplayName());
+                visibleChildren = getVisibleSortedNodes(current.getChildren().values(), sender, visibilityCache);
             }
-            if (!current.getDescription().isEmpty()) {
-                helpBuilder.append("§7").append(" - ").append(current.getDescription()).append("§r");
+            String description = current.getVisibleDescription(sender);
+            if (!description.isEmpty()) {
+                helpBuilder.append("§7").append(" - ").append(description).append("§r");
             }
             helpBuilder.append("\n");
-            List<ArgumentPoint> children = new ArrayList<>(current.getChildren().values());
-            children.sort(treeAsciiComparator);
             String childPrefix = prefix + (isLast ? TREE_CHILD_INDENT_LAST : TREE_CHILD_INDENT_MIDDLE);
-            for (int i = 0; i < children.size(); i++) {
-                buildTreeRecursively(children.get(i), helpBuilder, childPrefix, i == children.size() - 1);
+            for (int i = 0; i < visibleChildren.size(); i++) {
+                buildTreeRecursively(
+                        visibleChildren.get(i),
+                        helpBuilder,
+                        childPrefix,
+                        i == visibleChildren.size() - 1,
+                        sender,
+                        visibilityCache);
             }
         }
 
@@ -656,7 +700,6 @@ final class SimpleCommandLine implements CommandLine {
         }
 
         @Getter
-        @RequiredArgsConstructor
         @ToString
         class ArgumentPoint {
 
@@ -664,11 +707,43 @@ final class SimpleCommandLine implements CommandLine {
 
             private final boolean argument;
 
-            private final String description;
-
-            private final boolean terminal;
-
             private final Map<String, ArgumentPoint> children = new LinkedHashMap<>();
+
+            private final List<SimpleCommandLine> sources = new ArrayList<>();
+
+            ArgumentPoint(@NotNull String name, boolean argument) {
+                this.name = name;
+                this.argument = argument;
+            }
+
+            private void addSource(@NotNull SimpleCommandLine commandLine) {
+                sources.add(commandLine);
+            }
+
+            private boolean isVisibleTerminal(@NotNull CommandSender sender) {
+                for (SimpleCommandLine source : sources) {
+                    if (source.getExecutor() == null) {
+                        continue;
+                    }
+                    if (validate(sender, source.permission, source.open)) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            @NotNull
+            private String getVisibleDescription(@NotNull CommandSender sender) {
+                for (SimpleCommandLine source : sources) {
+                    if (source.getExecutor() == null || source.getDescription().isEmpty()) {
+                        continue;
+                    }
+                    if (validate(sender, source.permission, source.open)) {
+                        return source.getDescription();
+                    }
+                }
+                return "";
+            }
 
             public String getDisplayName() {
                 return argument ? String.format("§b<%s>", name) : "§e" + name;
