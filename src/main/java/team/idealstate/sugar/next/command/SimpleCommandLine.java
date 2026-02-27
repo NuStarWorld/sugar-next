@@ -588,6 +588,12 @@ final class SimpleCommandLine implements CommandLine {
 
         private final String rootName = SimpleCommandLine.this.getName();
 
+        private static final String TREE_ROOT_INDENT = "        ";
+        private static final String TREE_BRANCH_LAST = "└── ";
+        private static final String TREE_BRANCH_MIDDLE = "├── ";
+        private static final String TREE_CHILD_INDENT_LAST = "    ";
+        private static final String TREE_CHILD_INDENT_MIDDLE = "│   ";
+
         private final Map<String, ArgumentPoint> rootArgumentMap = new LinkedHashMap<>();
 
         private final Lazy<String> lazyHelpMessage = Lazy.of(this::buildMessageTree);
@@ -611,7 +617,7 @@ final class SimpleCommandLine implements CommandLine {
             StringBuilder helpBuilder = new StringBuilder("Usage: /").append(rootName).append("\n");
             List<ArgumentPoint> rootNodes = new ArrayList<>(rootArgumentMap.values());
             for (int i = 0; i < rootNodes.size(); i++) {
-                buildTreeRecursively(rootNodes.get(i), helpBuilder, "", i == rootNodes.size() - 1);
+                buildTreeRecursively(rootNodes.get(i), helpBuilder, TREE_ROOT_INDENT, i == rootNodes.size() - 1);
             }
             return helpBuilder.toString();
         }
@@ -621,7 +627,7 @@ final class SimpleCommandLine implements CommandLine {
                 @NotNull StringBuilder helpBuilder,
                 @NotNull String prefix,
                 boolean isLast) {
-            helpBuilder.append(prefix).append(isLast ? "└── " : "├── ");
+            helpBuilder.append(prefix).append(isLast ? TREE_BRANCH_LAST : TREE_BRANCH_MIDDLE);
             ArgumentPoint current = node;
             helpBuilder.append(current.getDisplayName());
             while (current.getChildren().size() == 1 && !current.isTerminal()) {
@@ -633,7 +639,7 @@ final class SimpleCommandLine implements CommandLine {
             }
             helpBuilder.append("\n");
             List<ArgumentPoint> children = new ArrayList<>(current.getChildren().values());
-            String childPrefix = prefix + (isLast ? "    " : "│   ");
+            String childPrefix = prefix + (isLast ? TREE_CHILD_INDENT_LAST : TREE_CHILD_INDENT_MIDDLE);
             for (int i = 0; i < children.size(); i++) {
                 buildTreeRecursively(children.get(i), helpBuilder, childPrefix, i == children.size() - 1);
             }
