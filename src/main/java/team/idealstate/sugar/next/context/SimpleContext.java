@@ -1010,15 +1010,16 @@ final class SimpleContext implements Context {
                         String supplyBeanName = "";
                         if (supplyNamed == null || StringUtils.isNullOrBlank(supplyNamed.value())) {
                             try {
-                                Method name = metadata.getClass().getMethod("name");
+                                Method name = supplyMetadata.annotationType().getMethod("name");
                                 if (String.class.isAssignableFrom(name.getReturnType())) {
-                                    name.setAccessible(true);
-                                    supplyBeanName = (String) name.invoke(metadata);
+                                    supplyBeanName = (String) name.invoke(supplyMetadata);
                                 }
                             } catch (NoSuchMethodException ignored) {
+                            } catch (IllegalAccessException | InvocationTargetException e) {
+                                throw new ContextException(e);
                             }
                             if (StringUtils.isNullOrBlank(supplyBeanName)) {
-                                supplyBeanName = beanType.getName();
+                                supplyBeanName = supplyBeanType.getName();
                             }
                         } else {
                             supplyBeanName = supplyNamed.value();
